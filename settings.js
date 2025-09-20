@@ -39,6 +39,8 @@ module.exports = {
     WELCOME: process.env.WELCOME || "true",
     // true if want welcome and goodbye msg in groups 
 
+    AUTO_VOICE: process.env.AUTO_VOICE || "true",
+
     ADMIN_EVENTS: process.env.ADMIN_EVENTS || "false",
     // make true to know who dismiss or promoted a member in group
 
