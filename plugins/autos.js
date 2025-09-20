@@ -1,14 +1,15 @@
-// plugins/autostatus-advanced.js
+// plugins/autostatus-fixed.js
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const { lite } = require('../lite');
 const config = require('../settings');
 
-const LIST_PATH = path.join(__dirname, '../my_data/autostatus_list.json');
-const STATE_PATH = path.join(__dirname, '../my_data/autostatus_state.json');
+const DATA_DIR = path.join(__dirname, '../my_data');
+const LIST_PATH = path.join(DATA_DIR, 'autostatus_list.json');
+const STATE_PATH = path.join(DATA_DIR, 'autostatus_state.json');
 
-// Default 7 images + final (replace URLs with your direct image links)
+// <-- YOUR PROVIDED IMAGE LIST -->
 const DEFAULT_LIST = [
   { url: "https://files.catbox.moe/nt7ivw.jpg", caption: "✨ Day 1 — Keep shining ✨" },
   { url: "https://files.catbox.moe/roulyk.jpg", caption: "🔥 Day 2 — Push harder, rise stronger 🔥" },
@@ -19,17 +20,15 @@ const DEFAULT_LIST = [
   { url: "https://files.catbox.moe/xincxd.jpg", caption: "🚀 Day 7 — Big dreams, strong steps 🚀" }
 ];
 
-// Ensure my_data exists and files exist
-async function ensureFiles() {
-  const dir = path.join(__dirname, '../all');
-  if (!fs.existsSync(dir)) await fsp.mkdir(dir, { recursive: true });
+let TIMER = null; // in-memory timer handle
 
-  if (!fs.existsSync(LIST_PATH)) {
-    await fsp.writeFile(LIST_PATH, JSON.stringify(DEFAULT_LIST, null, 2), 'utf8');
-  }
+// Helpers
+async function ensureFiles() {
+  if (!fs.existsSync(DATA_DIR)) await fsp.mkdir(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(LIST_PATH)) await fsp.writeFile(LIST_PATH, JSON.stringify(DEFAULT_LIST, null, 2), 'utf8');
   if (!fs.existsSync(STATE_PATH)) {
-    const initState = { running: false, dayIndex: 0, nextSend: null, intervalMs: 24*60*60*1000, startedAt: null };
-    await fsp.writeFile(STATE_PATH, JSON.stringify(initState, null, 2), 'utf8');
+    const init = { running: false, dayIndex: 0, intervalMs: 24 * 60 * 60 * 1000, nextSend: null, startedAt: null };
+    await fsp.writeFile(STATE_PATH, JSON.stringify(init, null, 2), 'utf8');
   }
 }
 
@@ -41,27 +40,27 @@ async function readList() {
     return DEFAULT_LIST.slice();
   }
 }
-
 async function writeList(list) {
   await fsp.writeFile(LIST_PATH, JSON.stringify(list, null, 2), 'utf8');
 }
-
 async function readState() {
   try {
     const raw = await fsp.readFile(STATE_PATH, 'utf8');
     return JSON.parse(raw);
   } catch (e) {
-    return { running: false, dayIndex: 0, nextSend: null, intervalMs: 24*60*60*1000, startedAt: null };
+    return { running: false, dayIndex: 0, intervalMs: 24 * 60 * 60 * 1000, nextSend: null, startedAt: null };
   }
 }
-
-async function writeState(state) {
-  await fsp.writeFile(STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+async function writeState(st) {
+  await fsp.writeFile(STATE_PATH, JSON.stringify(st, null, 2), 'utf8');
 }
 
-// send single status (image+caption) to status@broadcast
-async function sendStatus(conn, item, dayNumber) {
-  const caption = `${item.caption}\n\n> NENO XMD Auto Status • Day ${dayNumber}`;
+// send status (image+caption) to status@broadcast with newsletter context
+async function sendStatus(conn, item, dayNumber, isFinal = false) {
+  const caption = isFinal
+    ? `✅ NENO XMD Auto Status Complete!\n\n© NENO XMD`
+    : `${item.caption}\n\n> NENO XMD Auto Status • Day ${dayNumber}`;
+
   try {
     await conn.sendMessage("status@broadcast", {
       image: { url: item.url },
@@ -76,237 +75,172 @@ async function sendStatus(conn, item, dayNumber) {
         }
       }
     });
-    console.log(`AutoStatus: sent day ${dayNumber}`);
+    console.log(`AutoStatus: sent day ${dayNumber}${isFinal ? ' (final)' : ''}`);
     return true;
   } catch (e) {
-    console.error("AutoStatus send failed:", e);
+    console.error('AutoStatus send failed:', e);
     return false;
   }
 }
 
-// background checker runs every minute
-let checkerHandle = null;
-async function startChecker(conn) {
-  if (checkerHandle) return;
-  await ensureFiles();
-  checkerHandle = setInterval(async () => {
+// schedule next send using state
+async function scheduleNext(conn) {
+  // clear existing timer
+  if (TIMER) { clearTimeout(TIMER); TIMER = null; }
+
+  const state = await readState();
+  if (!state.running) return;
+
+  const now = Date.now();
+  let ms = (typeof state.nextSend === 'number') ? state.nextSend - now : 0;
+  if (ms < 0) ms = 0;
+
+  // set timer
+  TIMER = setTimeout(async () => {
     try {
-      const state = await readState();
-      if (!state.running) return;
-      if (!state.nextSend) return;
-      const now = Date.now();
-      if (now >= state.nextSend) {
-        const list = await readList();
-        if (!Array.isArray(list) || list.length === 0) {
-          console.warn("AutoStatus: empty list");
-          // stop gracefully
-          state.running = false;
-          await writeState(state);
-          return;
-        }
-        // dayIndex points to next item to send (0-based)
-        const idx = Math.min(state.dayIndex, list.length - 1);
-        const item = list[idx];
-        const success = await sendStatus(conn, item, idx + 1);
-        // advance
-        state.dayIndex = state.dayIndex + 1;
-        if (state.dayIndex >= list.length) {
-          // send final "finished" status with NENO XMD Auto Status caption
-          const finalCaption = `✅ NENO XMD Auto Status Complete!\n\n© NENO XMD`;
-          try {
-            await conn.sendMessage("status@broadcast", {
-              image: { url: list[list.length - 1].url }, // reuse last image or change
-              caption: finalCaption,
-              contextInfo: {
-                forwardingScore: 999,
-                isForwarded: true,
-                forwardedNewsletterMessageInfo: {
-                  newsletterJid: '120363401225837204@newsletter',
-                  newsletterName: 'NENO XMD',
-                  serverMessageId: 143
-                }
-              }
-            });
-          } catch (e) { console.warn("AutoStatus final send failed", e); }
-          // stop after complete
-          state.running = false;
-          state.nextSend = null;
-          state.startedAt = state.startedAt || Date.now();
-          await writeState(state);
-          console.log("AutoStatus: completed 7 days.");
-        } else {
-          // schedule next
-          state.nextSend = Date.now() + state.intervalMs;
-          await writeState(state);
-        }
+      const lst = await readList();
+      const st = await readState();
+      if (!st.running) return;
+
+      const idx = Math.min(st.dayIndex, lst.length - 1);
+      const item = lst[idx];
+      if (!item) {
+        // nothing to send -> stop
+        st.running = false;
+        st.nextSend = null;
+        await writeState(st);
+        return;
+      }
+
+      // if this is last item (dayIndex === last index) then send item and final message
+      const isLast = (st.dayIndex >= lst.length - 1);
+      await sendStatus(conn, item, idx + 1, false);
+
+      if (isLast) {
+        // send final summary message and stop
+        await sendStatus(conn, lst[lst.length - 1], lst.length, true).catch(()=>{});
+        st.running = false;
+        st.nextSend = null;
+        st.startedAt = st.startedAt || Date.now();
+        await writeState(st);
+        console.log('AutoStatus: completed sequence.');
+      } else {
+        // advance and schedule next
+        st.dayIndex = st.dayIndex + 1;
+        st.nextSend = Date.now() + (st.intervalMs || 24 * 3600 * 1000);
+        await writeState(st);
+        // schedule again
+        scheduleNext(conn);
       }
     } catch (e) {
-      console.error("AutoStatus checker error:", e);
+      console.error('AutoStatus timer error:', e);
     }
-  }, 60 * 1000); // every minute
+  }, ms);
 }
 
-async function stopChecker() {
-  if (checkerHandle) {
-    clearInterval(checkerHandle);
-    checkerHandle = null;
-  }
-}
-
-// plugin: main command handlers
+// COMMAND HANDLER
 lite({
   pattern: "autostatus",
   react: "📤",
-  desc: "Manage Auto Status (owner only): on/off/status/list/add/remove/set",
+  desc: "Manage Auto Status: on/off/status/list/add/remove",
   category: "owner",
   filename: __filename
 }, async (conn, mek, m, { from, args, reply, isOwner }) => {
   try {
     if (!isOwner) return reply("❌ Only owner can use this command.");
-
     await ensureFiles();
-    const cmd = (args[0] || '').toLowerCase();
 
-    if (!cmd || cmd === 'help') {
+    const sub = (args[0] || '').toLowerCase();
+
+    if (!sub || sub === 'help') {
       return reply(
 `Usage:
-.autostatus on [intervalHours]    - Start auto status (default interval 24h)
-.autostatus off                   - Stop auto status
-.autostatus status                - Show current status
-.autostatus list                  - Show saved status list
-.autostatus add <url>|<caption>   - Add new status item
-.autostatus remove <index>        - Remove item (1-based)
-.autostatus set                   - Replace entire list (follow instructions)
-.autostatus help                  - Show this help`
+.autostatus on [hours]   - Start auto status (default 24h interval)
+.autostatus off          - Stop
+.autostatus status       - Show state
+.autostatus list         - Show items
+.autostatus add <url>|<caption> - Add item
+.autostatus remove <index> - Remove item`
       );
     }
 
-    if (cmd === 'on') {
-      const intervalHours = parseFloat(args[1]) || 24;
-      const intervalMs = Math.max(1, intervalHours) * 60 * 60 * 1000;
-
+    if (sub === 'on') {
+      const hours = parseFloat(args[1]) || 24;
+      const intervalMs = Math.max(0.1, hours) * 3600 * 1000; // min 0.1 hour
       const list = await readList();
-      if (!list || list.length === 0) return reply("❌ Status list is empty. Add items with `.autostatus add <url>|<caption>`");
+      if (!Array.isArray(list) || list.length === 0) return reply("❌ Status list empty. Add items with `.autostatus add <url>|<caption>`");
 
-      const state = await readState();
-      if (state.running) return reply("⚠️ Auto Status already running.");
+      const st = await readState();
+      if (st.running) return reply("⚠️ Auto Status already running.");
 
-      // start immediately: send first right away then schedule nexts
-      state.running = true;
-      state.dayIndex = 0; // will be used by checker
-      state.intervalMs = intervalMs;
-      state.startedAt = Date.now();
-      state.nextSend = Date.now(); // checker will pick it up immediately (within minute)
-      await writeState(state);
+      st.running = true;
+      st.dayIndex = 0;
+      st.intervalMs = intervalMs;
+      st.startedAt = Date.now();
+      st.nextSend = Date.now(); // start immediately
+      await writeState(st);
 
-      // start background checker if not started
-      await startChecker(conn);
-
-      return reply(`✅ Auto Status started. Interval: ${intervalHours} hour(s). First will send within a minute.`);
+      // schedule
+      await scheduleNext(conn);
+      return reply(`✅ Auto Status started. Interval: ${hours} hour(s). First item will send shortly.`);
     }
 
-    if (cmd === 'off') {
-      const state = await readState();
-      if (!state.running) return reply("⚠️ Auto Status not running.");
-      state.running = false;
-      state.nextSend = null;
-      await writeState(state);
+    if (sub === 'off') {
+      const st = await readState();
+      if (!st.running) return reply("⚠️ Auto Status is not running.");
+      st.running = false;
+      st.nextSend = null;
+      await writeState(st);
+      if (TIMER) { clearTimeout(TIMER); TIMER = null; }
       return reply("✅ Auto Status stopped.");
     }
 
-    if (cmd === 'status') {
-      const state = await readState();
+    if (sub === 'status') {
+      const st = await readState();
       const list = await readList();
-      const running = !!state.running;
-      const next = state.nextSend ? new Date(state.nextSend).toLocaleString() : 'N/A';
-      const dayIndex = (state.dayIndex || 0);
-      const total = Array.isArray(list) ? list.length : 0;
       return reply(
 `🔎 Auto Status Info
-Running : ${running ? 'Yes' : 'No'}
-Started At : ${state.startedAt ? new Date(state.startedAt).toLocaleString() : 'N/A'}
-Next Send : ${next}
-Day Index : ${dayIndex} / ${total}
-Interval (hours) : ${Math.round((state.intervalMs||0)/(60*60*1000))}`
+Running: ${st.running ? 'Yes' : 'No'}
+Started At: ${st.startedAt ? new Date(st.startedAt).toLocaleString() : 'N/A'}
+Next Send: ${st.nextSend ? new Date(st.nextSend).toLocaleString() : 'N/A'}
+Day Index: ${st.dayIndex || 0} / ${list.length}
+Interval (hours): ${((st.intervalMs||0)/(3600*1000)).toFixed(2)}`
       );
     }
 
-    if (cmd === 'list') {
+    if (sub === 'list') {
       const list = await readList();
-      if (!list || list.length === 0) return reply("Status list is empty.");
-      let out = "📜 Auto Status List:\n\n";
-      list.forEach((it, i) => {
-        out += `${i+1}. ${it.url}\n   ${it.caption}\n\n`;
-      });
+      if (!list.length) return reply("List empty.");
+      let out = '📜 Auto Status Items:\n\n';
+      list.forEach((it, i) => out += `${i+1}. ${it.url}\n   ${it.caption}\n\n`);
       return reply(out);
     }
 
-    if (cmd === 'add') {
+    if (sub === 'add') {
       const rest = args.slice(1).join(' ').trim();
       if (!rest || !rest.includes('|')) return reply("Usage: .autostatus add <imageUrl>|<caption>");
-      const [url, ...capParts] = rest.split('|');
-      const caption = capParts.join('|').trim();
-      if (!url || !caption) return reply("Invalid format. Usage: .autostatus add <imageUrl>|<caption>");
+      const [url, ...cap] = rest.split('|');
+      const caption = cap.join('|').trim();
+      if (!url || !caption) return reply("Invalid format.");
       const list = await readList();
       list.push({ url: url.trim(), caption });
       await writeList(list);
-      return reply(`✅ Added as item #${list.length}`);
+      return reply(`✅ Added item #${list.length}`);
     }
 
-    if (cmd === 'remove') {
+    if (sub === 'remove') {
       const idx = parseInt(args[1]);
       if (!idx || idx < 1) return reply("Usage: .autostatus remove <index>");
       const list = await readList();
       if (idx > list.length) return reply("Index out of range.");
-      const removed = list.splice(idx-1, 1);
+      const rem = list.splice(idx-1,1);
       await writeList(list);
-      return reply(`✅ Removed item ${idx}: ${removed[0].caption}`);
+      return reply(`✅ Removed item #${idx}`);
     }
 
-    if (cmd === 'set') {
-      // Replace whole list. For convenience, we instruct owner to send a JSON array in chat after .autostatus set command.
-      // Expect: owner replies to this message with JSON array or sends new text containing JSON.
-      // For simplicity: if the owner sends `.autostatus set` then the next message they send will be treated as JSON array.
-      await reply("➡️ Send now the new list as a JSON array in one message. Example:\n[\n  {\"url\":\"https://...jpg\",\"caption\":\"Day 1\"},\n  {\"url\":\"https://...jpg\",\"caption\":\"Day 2\"}\n]\n\nReply with `cancel` to abort.");
-      // Save a temporary marker state to know next message is the JSON data
-      const markerPath = path.join(__dirname, '../my_data/autostatus_nextset.json');
-      await fsp.writeFile(markerPath, JSON.stringify({ owner: true, createdAt: Date.now() }), 'utf8');
-      return;
-    }
-
-    // If reached here, check if user sent JSON after 'set' prompt
-    // If owner sends next message content (not a command) and marker exists, treat it as JSON
-    // But this handler only runs on .autostatus command; to capture next message you'd need separate global 'on body' listener.
-    // For simplicity we implement a simple file-check: if args[0] === 'applyset' then read from my_data/autostatus_pending.json
-    if (cmd === 'applyset') {
-      // optional helper to apply pending set (owner would have uploaded a file to my_data/autostatus_pending.json)
-      const pendingPath = path.join(__dirname, '../my_data/autostatus_pending.json');
-      if (!fs.existsSync(pendingPath)) return reply("No pending set file found. Use .autostatus set then paste JSON to file my_data/autostatus_pending.json");
-      const raw = await fsp.readFile(pendingPath, 'utf8');
-      let arr;
-      try { arr = JSON.parse(raw); } catch (e) { return reply("Invalid JSON in pending file."); }
-      if (!Array.isArray(arr)) return reply("JSON must be an array of objects {url, caption}");
-      await writeList(arr);
-      return reply(`✅ Replaced list with ${arr.length} items.`);
-    }
-
-    return reply("Unknown subcommand. Use `.autostatus help` for usage.");
-
-  } catch (e) {
-    console.error("autostatus command error:", e);
-    reply("❌ Error in autostatus command.");
+    return reply("Unknown subcommand. Use .autostatus help");
+  } catch (err) {
+    console.error("autostatus command error:", err);
+    reply("❌ Error in autostatus command. See console for details.");
   }
 });
-
-// On bot start: ensure files and start checker with a conn once plugin loaded
-(async () => {
-  try {
-    await ensureFiles();
-    // Note: `startChecker` requires a conn reference. We will not auto-start it here because we don't have conn.
-    // When the first .autostatus on command runs, startChecker(conn) will be called and continues running.
-    // But to resume after bot restart, we rely on owner to send `.autostatus status` or `.autostatus on` again.
-    // If you want automatic resume on startup, you can call startChecker(conn) from main bot init with the conn object.
-  } catch (e) {
-    console.error("AutoStatus init error:", e);
-  }
-})();
