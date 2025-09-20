@@ -1,4 +1,4 @@
-const fs = require('fs');
+⁷const fs = require('fs');
 if (fs.existsSync('config.env')) require('dotenv').config({ path: './config.env' });
 
 function convertToBool(text, fault = 'true') {
@@ -6,7 +6,7 @@ function convertToBool(text, fault = 'true') {
 }
 
 module.exports = {
-    SESSION_ID: process.env.SESSION_ID || "PLZ PUT YOUER SESSON ID PLZ",
+    SESSION_ID: process.env.SESSION_ID || "NENO-XMD~6CgSiCwb#o5acLu6T7lQe9KAM7JxUV9n1vWx6SmaqDG_Olfk1WLA",
     // add your Session Id make sure it starts with NENO~
 
     PREFIX: process.env.PREFIX || ".",
@@ -78,10 +78,10 @@ module.exports = {
     DELETE_LINKS: process.env.DELETE_LINKS || "false",
     // automatic delete links without removing member 
 
-    OWNER_NUMBER: process.env.OWNER_NUMBER || "94721584279",
+    OWNER_NUMBER: process.env.OWNER_NUMBER || "9779804861539",
     // add your bot owner number
 
-    OWNER_NAME: process.env.OWNER_NAME || "ɴɪᴍᴇꜱʜᴋᴀ࿐",
+    OWNER_NAME: process.env.OWNER_NAME || "NENO X MANI࿐",
     // add bot owner name
 
     DESCRIPTION: process.env.DESCRIPTION || "*© ᴘᴏᴡᴇʀᴇᴅ ʙʏ ɴɪᴍᴇꜱʜᴋᴀ ᴍɪʜɪʀᴀᴍ*",
